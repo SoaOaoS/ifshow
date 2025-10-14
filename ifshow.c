@@ -13,6 +13,48 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <string.h>
+#include <arpa/inet.h>
+
+// Convert a sockaddr (IPv4/IPv6) to a numeric host string.
+static int addr_to_string(const struct sockaddr *sa, char *buf, size_t buflen) {
+    if (!sa) return -1;
+    int family = sa->sa_family;
+    return getnameinfo(
+        sa,
+        (family == AF_INET) ? (socklen_t)sizeof(struct sockaddr_in)
+                            : (socklen_t)sizeof(struct sockaddr_in6),
+        buf, (socklen_t)buflen,
+        NULL, 0,
+        NI_NUMERICHOST);
+}
+
+// Count prefix length from a netmask sockaddr. Works for IPv4 and IPv6.
+// Returns -1 if input is NULL or family unsupported.
+static int count_prefix_length(const struct sockaddr *netmask) {
+    if (!netmask) return -1;
+    if (netmask->sa_family == AF_INET) {
+        const struct sockaddr_in *nm4 = (const struct sockaddr_in *)netmask;
+        uint32_t m = ntohl(nm4->sin_addr.s_addr);
+        int count = 0;
+        for (int i = 31; i >= 0; --i) {
+            if ((m >> i) & 1U) count++; else break; // stop at first 0 from MSB
+        }
+        return count;
+    } else if (netmask->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *nm6 = (const struct sockaddr_in6 *)netmask;
+        int count = 0;
+        for (int i = 0; i < 16; ++i) {
+            unsigned char b = nm6->sin6_addr.s6_addr[i];
+            for (int bit = 7; bit >= 0; --bit) {
+                if ((b >> bit) & 1U) count++; else return count; // stop at first 0
+            }
+        }
+        return count;
+    }
+    return -1;
+}
+
+// (previous single-line formatter removed in favor of grouped bullet output)
 
 void help() {
     printf("Usage:\n");
@@ -20,7 +62,34 @@ void help() {
     printf("  ifshow -i <interface_name>    # Show specific interface\n");
     printf("\nExamples:\n");
     printf("  ifshow -a\n");
-    printf("  ifshow -i eth0\n\n");
+    printf("  ifshow -i eth0\n");
+    printf("\nNotes:\n");
+    printf("  Addresses include netmask as address/prefix.\n");
+    printf("  IPv4 also shows dotted mask in parentheses.\n\n");
+}
+
+// Print a header for an interface, e.g., "eth0:".
+static void print_interface_header(const char *ifname) {
+    if (ifname && *ifname) {
+        printf("%s:\n", ifname);
+    }
+}
+
+// Print a bullet line for an address with prefix and optional dotted mask.
+static void print_address_bullet(const struct sockaddr *addr, const struct sockaddr *netmask) {
+    if (!addr) return;
+    char addr_str[NI_MAXHOST] = {0};
+    char mask_str[NI_MAXHOST] = {0};
+    int family = addr->sa_family;
+    if (addr_to_string(addr, addr_str, sizeof(addr_str)) != 0) return;
+    int prefix = count_prefix_length(netmask);
+    if (family == AF_INET && netmask && addr_to_string(netmask, mask_str, sizeof(mask_str)) == 0 && prefix >= 0) {
+        printf(" - %s/%d (%s)\n", addr_str, prefix, mask_str);
+    } else if (prefix >= 0) {
+        printf(" - %s/%d\n", addr_str, prefix);
+    } else {
+        printf(" - %s\n", addr_str);
+    }
 }
 
 static void show_all_interfaces(void) {
@@ -30,21 +99,38 @@ static void show_all_interfaces(void) {
         exit(EXIT_FAILURE);
     }
 
-    for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = (*ifa).ifa_next) { // ifa points to the first node, ifaddr, of the struct ifaddrs
-        if (!ifa || !(*ifa).ifa_addr) continue; // skip if no no ifa or no address on ifa
-        int family = (*ifa).ifa_addr->sa_family; // retrieve family address of ifa, either AF_INET or AF_INET6 (v4 or v6)
-        if (family == AF_INET || family == AF_INET6) {
-            char host[NI_MAXHOST];
-            if (getnameinfo(
-                    (*ifa).ifa_addr,
-                    (family == AF_INET) ? (socklen_t)sizeof(struct sockaddr_in)
-                                        : (socklen_t)sizeof(struct sockaddr_in6),
-                    host, sizeof(host),
-                    NULL, 0,
-                    NI_NUMERICHOST) == 0) {
-                printf("%s\t%s\n", (*ifa).ifa_name, host);
+    // Collect unique interface names with IP addresses (simple fixed-size list to stay lightweight).
+    const int MAX_IFS = 256;
+    const char *names[MAX_IFS];
+    int name_count = 0;
+
+    for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = (*ifa).ifa_next) {
+        if (!ifa || !(*ifa).ifa_addr) continue;
+        int family = (*ifa).ifa_addr->sa_family;
+        if (family != AF_INET && family != AF_INET6) continue;
+        // Check if name already recorded
+        int seen = 0;
+        for (int i = 0; i < name_count; ++i) {
+            if (strcmp(names[i], (*ifa).ifa_name) == 0) { seen = 1; break; }
+        }
+        if (!seen && name_count < MAX_IFS) {
+            names[name_count++] = (*ifa).ifa_name; // pointer valid while ifaddr is alive
+        }
+    }
+
+    // Print grouped output
+    for (int i = 0; i < name_count; ++i) {
+        const char *ifname = names[i];
+        print_interface_header(ifname);
+        for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = (*ifa).ifa_next) {
+            if (!ifa || !(*ifa).ifa_addr) continue;
+            if (strcmp((*ifa).ifa_name, ifname) != 0) continue;
+            int family = (*ifa).ifa_addr->sa_family;
+            if (family == AF_INET || family == AF_INET6) {
+                print_address_bullet((*ifa).ifa_addr, (*ifa).ifa_netmask);
             }
         }
+        printf("\n");
     }
 
     freeifaddrs(ifaddr);
@@ -58,22 +144,14 @@ static void show_single_interface(const char *target_ifname) {
     }
 
     int found = 0;
+    print_interface_header(target_ifname);
     for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = (*ifa).ifa_next) {
         if (!ifa || !(*ifa).ifa_addr) continue;
         if (strcmp((*ifa).ifa_name, target_ifname) != 0) continue;
         int family = (*ifa).ifa_addr->sa_family;
         if (family == AF_INET || family == AF_INET6) {
-            char host[NI_MAXHOST];
-            if (getnameinfo(
-                    (*ifa).ifa_addr,
-                    (family == AF_INET) ? (socklen_t)sizeof(struct sockaddr_in)
-                                        : (socklen_t)sizeof(struct sockaddr_in6),
-                    host, sizeof(host),
-                    NULL, 0,
-                    NI_NUMERICHOST) == 0) {
-                printf("%s\t%s\n", (*ifa).ifa_name, host);
-                found = 1;
-            }
+            print_address_bullet((*ifa).ifa_addr, (*ifa).ifa_netmask);
+            found = 1;
         }
     }
 
@@ -100,7 +178,6 @@ int main(int argc, char *argv[]) {
             help();
             exit(EXIT_FAILURE);
         }
-        printf("Option '-a' detected: showing all interfaces...\n");
         show_all_interfaces();
     }
 
@@ -110,7 +187,6 @@ int main(int argc, char *argv[]) {
             help();
             exit(EXIT_FAILURE);
         }
-        printf("Option '-i' detected: showing interface '%s'...\n", argv[2]);
         show_single_interface(argv[2]);
     }
 
