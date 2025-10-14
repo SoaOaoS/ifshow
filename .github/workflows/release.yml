@@ -24,7 +24,7 @@ jobs:
       - name: Build (Linux x86_64)
         run: |
           mkdir -p dist
-          gcc -Wall -Wextra -O2 -o dist/ifshow-linux-x86_64 ifshow/ifshow.c
+          gcc -Wall -Wextra -O2 -o dist/ifshow-linux-x86_64 ifshow.c
           strip dist/ifshow-linux-x86_64 || true
           tar -C dist -czf dist/ifshow-linux-x86_64.tgz ifshow-linux-x86_64
 
