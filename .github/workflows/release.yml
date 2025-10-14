@@ -1,0 +1,40 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # allow creating GitHub releases
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # semantic-release needs full history
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build (Linux x86_64)
+        run: |
+          mkdir -p dist
+          gcc -Wall -Wextra -O2 -o dist/ifshow-linux-x86_64 ifshow/ifshow.c
+          strip dist/ifshow-linux-x86_64 || true
+          tar -C dist -czf dist/ifshow-linux-x86_64.tgz ifshow-linux-x86_64
+
+      - name: Release
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
