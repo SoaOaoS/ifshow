@@ -53,20 +53,20 @@ static int addr_to_string(const struct sockaddr *sa, char *buf, size_t buflen) {
  *         is NULL or the address family is unsupported.
  */
 static int count_prefix_length(const struct sockaddr *netmask) {
-    if (!netmask) return -1;
-    if (netmask->sa_family == AF_INET) {
-        const struct sockaddr_in *nm4 = (const struct sockaddr_in *)netmask;
-        uint32_t m = ntohl(nm4->sin_addr.s_addr);
+    if (!netmask) return -1; // error on netmask undefined
+    if (netmask->sa_family == AF_INET) { // if v4
+        const struct sockaddr_in *nm4 = (const struct sockaddr_in *)netmask; // set nm4 to netmask from struct 
+        uint32_t m = ntohl(nm4->sin_addr.s_addr); // network to host byte order 
         int count = 0;
-        for (int i = 31; i >= 0; --i) {
-            if ((m >> i) & 1U) count++; else break; // stop at first 0 from MSB
+        for (int i = 31; i >= 0; --i) { // start from 31 because network masks starts from 32
+            if ((m >> i) & 1U) count++; else break; // stop at first 0 from MSB, because first 0 is forcibly the end of mask
         }
         return count;
-    } else if (netmask->sa_family == AF_INET6) {
+    } else if (netmask->sa_family == AF_INET6) { //else v6
         const struct sockaddr_in6 *nm6 = (const struct sockaddr_in6 *)netmask;
         int count = 0;
         for (int i = 0; i < 16; ++i) {
-            unsigned char b = nm6->sin6_addr.s6_addr[i];
+            unsigned char b = nm6->sin6_addr.s6_addr[i];                              // This one was designed by AI
             for (int bit = 7; bit >= 0; --bit) {
                 if ((b >> bit) & 1U) count++; else return count; // stop at first 0
             }
@@ -162,17 +162,17 @@ static void show_all_interfaces(void) {
         // Check if name already recorded
         int seen = 0;
         for (int i = 0; i < name_count; ++i) {
-            if (strcmp(names[i], (*ifa).ifa_name) == 0) { seen = 1; break; }
+            if (strcmp(names[i], (*ifa).ifa_name) == 0) { seen = 1; break; } // set seen=1 if name from table and ifa_name are the same
         }
-        if (!seen && name_count < MAX_IFS) {
+        if (!seen && name_count < MAX_IFS) { // copare to fixed size to verify we arent having a 800 line output...
             names[name_count++] = (*ifa).ifa_name; // pointer valid while ifaddr is alive
         }
     }
 
     // Print grouped output
-    for (int i = 0; i < name_count; ++i) {
-        const char *ifname = names[i];
-        print_interface_header(ifname);
+    for (int i = 0; i < name_count; ++i) { //name_count defined just above, allows to then print addr per ifname
+        const char *ifname = names[i]; // work from logic defined on the top (158-170)
+        print_interface_header(ifname); // Prints header, then all addresses linked to this header, depending on the addrfamily
         for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = (*ifa).ifa_next) {
             if (!ifa || !(*ifa).ifa_addr) continue;
             if (strcmp((*ifa).ifa_name, ifname) != 0) continue;
@@ -200,24 +200,24 @@ static void show_all_interfaces(void) {
  */
 static void show_single_interface(const char *target_ifname) {
     struct ifaddrs *ifaddr = NULL;
-    if (getifaddrs(&ifaddr) == -1) {
+    if (getifaddrs(&ifaddr) == -1) { //error treatment if getifaddrs fails
         perror("getifaddrs");
         exit(EXIT_FAILURE);
     }
 
     int found = 0;
-    print_interface_header(target_ifname);
+    print_interface_header(target_ifname); // print interface header (small function just to format it)
     for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = (*ifa).ifa_next) {
-        if (!ifa || !(*ifa).ifa_addr) continue;
-        if (strcmp((*ifa).ifa_name, target_ifname) != 0) continue;
-        int family = (*ifa).ifa_addr->sa_family;
+        if (!ifa || !(*ifa).ifa_addr) continue; // if no interface or no address on interface, break loop on interface and skip to next one
+        if (strcmp((*ifa).ifa_name, target_ifname) != 0) continue; //if interface name different from target ifname defined before, break and skip like before
+        int family = (*ifa).ifa_addr->sa_family; // Set family from ifa_addr.
         if (family == AF_INET || family == AF_INET6) {
-            print_address_bullet((*ifa).ifa_addr, (*ifa).ifa_netmask);
-            found = 1;
+            print_address_bullet((*ifa).ifa_addr, (*ifa).ifa_netmask); // If address was found, format it and print it.
+            found = 1; // set flag to 1 to prevent exit, ifname was found
         }
     }
 
-    freeifaddrs(ifaddr);
+    freeifaddrs(ifaddr); // -> Cleanup
     if (!found) {
         printf("Interface '%s' not found or has no IP.\n", target_ifname);
     }
@@ -238,7 +238,7 @@ static void show_single_interface(const char *target_ifname) {
 int main(int argc, char *argv[]) {
 
     const char *expected_argument_1 = "-a";
-    const char *expected_argument_2 = "-i";
+    const char *expected_argument_2 = "-i"; // Has to be one of the two expected arguments, else crash
 
     if (argc < 2 || argc > 3) {
         printf("\nUnrecognized number of arguments. Please refer to the following:\n\n");
@@ -272,3 +272,14 @@ int main(int argc, char *argv[]) {
 
     return EXIT_SUCCESS;
 }
+
+/* Inspired by : 
+
+- https://gist.github.com/edufelipe/6108057, on error treatment (specifically on getifaddrs) and cleanup ( -> discovered that )
+- https://man.docs.euro-linux.com/EL%207/man-pages-fr/getifaddrs.3.fr.html, https://www.man7.org/linux/man-pages/man3/sockaddr.3type.html 
+  and other diver man docs for already built struct and functions linked to defined libs.
+- Designed initial logic, backend logic, functions logic, comments.
+
+- AI made / inspired : help() function, print_address_bullet() (initially designed by hand and refactored with AI), addr_to_string() (linked to previously AI reworked function), github workflow to release binary on github and IPv6 netmask coputing.
+  AI was mainly used to reduce code complexity, better User eXperience and better User Treeatment.
+*/
