@@ -15,21 +15,43 @@
 #include <string.h>
 #include <arpa/inet.h>
 
-// Convert a sockaddr (IPv4/IPv6) to a numeric host string.
+/**
+ * @brief Convert a socket address to a numeric host string.
+ *
+ * Converts an IPv4 or IPv6 `sockaddr` to its numeric string representation
+ * using `inet_ntop` (no DNS lookups involved).
+ *
+ * @param sa      Pointer to source socket address (IPv4/IPv6). Must not be NULL.
+ * @param buf     Output buffer to receive the numeric host string.
+ * @param buflen  Size (in bytes) of the output buffer.
+ * @return 0 on success; -1 on failure (NULL args, unsupported family, or buffer too small).
+ */
 static int addr_to_string(const struct sockaddr *sa, char *buf, size_t buflen) {
-    if (!sa) return -1;
-    int family = sa->sa_family;
-    return getnameinfo(
-        sa,
-        (family == AF_INET) ? (socklen_t)sizeof(struct sockaddr_in)
-                            : (socklen_t)sizeof(struct sockaddr_in6),
-        buf, (socklen_t)buflen,
-        NULL, 0,
-        NI_NUMERICHOST);
+    if (!sa || !buf || buflen == 0) return -1;
+    switch (sa->sa_family) {
+        case AF_INET: {
+            const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+            return inet_ntop(AF_INET, &sin->sin_addr, buf, (socklen_t)buflen) ? 0 : -1;
+        }
+        case AF_INET6: {
+            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+            return inet_ntop(AF_INET6, &sin6->sin6_addr, buf, (socklen_t)buflen) ? 0 : -1;
+        }
+        default:
+            return -1;
+    }
 }
 
-// Count prefix length from a netmask sockaddr. Works for IPv4 and IPv6.
-// Returns -1 if input is NULL or family unsupported.
+/**
+ * @brief Compute CIDR prefix length from a netmask sockaddr.
+ *
+ * Supports IPv4 and IPv6 netmasks. For IPv4, counts leading 1-bits in the
+ * 32-bit mask. For IPv6, counts leading 1-bits across the 128-bit mask.
+ *
+ * @param netmask  Pointer to a netmask `sockaddr` (AF_INET or AF_INET6).
+ * @return Prefix length (0..32 for IPv4, 0..128 for IPv6), or -1 if `netmask`
+ *         is NULL or the address family is unsupported.
+ */
 static int count_prefix_length(const struct sockaddr *netmask) {
     if (!netmask) return -1;
     if (netmask->sa_family == AF_INET) {
@@ -56,6 +78,12 @@ static int count_prefix_length(const struct sockaddr *netmask) {
 
 // (previous single-line formatter removed in favor of grouped bullet output)
 
+/**
+ * @brief Print CLI usage instructions to stdout.
+ *
+ * Describes available options and examples for using the program. Does not
+ * exit; callers decide flow control.
+ */
 void help() {
     printf("Usage:\n");
     printf("  ifshow -a                     # Show all interfaces\n");
@@ -68,14 +96,30 @@ void help() {
     printf("  IPv4 also shows dotted mask in parentheses.\n\n");
 }
 
-// Print a header for an interface, e.g., "eth0:".
+/**
+ * @brief Print an interface header line.
+ *
+ * Prints the interface name followed by a colon (e.g., "eth0:") if the
+ * provided name is non-empty.
+ *
+ * @param ifname  Interface name string. May be NULL or empty; prints nothing.
+ */
 static void print_interface_header(const char *ifname) {
     if (ifname && *ifname) {
         printf("%s:\n", ifname);
     }
 }
 
-// Print a bullet line for an address with prefix and optional dotted mask.
+/**
+ * @brief Print a bullet line for an address.
+ *
+ * Renders a line in the form " - <addr>/<prefix>". For IPv4, also prints the
+ * dotted mask in parentheses, " - 192.0.2.10/24 (255.255.255.0)".
+ *
+ * @param addr     Pointer to the address `sockaddr` (IPv4 or IPv6). If NULL, no output.
+ * @param netmask  Optional pointer to the netmask `sockaddr` used to compute
+ *                 the prefix length. May be NULL.
+ */
 static void print_address_bullet(const struct sockaddr *addr, const struct sockaddr *netmask) {
     if (!addr) return;
     char addr_str[NI_MAXHOST] = {0};
@@ -92,6 +136,13 @@ static void print_address_bullet(const struct sockaddr *addr, const struct socka
     }
 }
 
+/**
+ * @brief Enumerate and display all interfaces with their IP addresses.
+ *
+ * Uses `getifaddrs` to collect interface entries, groups them by interface
+ * name, and prints IPv4/IPv6 addresses with prefixes. Exits the process on
+ * `getifaddrs` failure.
+ */
 static void show_all_interfaces(void) {
     struct ifaddrs *ifaddr = NULL;
     if (getifaddrs(&ifaddr) == -1) {
@@ -136,6 +187,17 @@ static void show_all_interfaces(void) {
     freeifaddrs(ifaddr);
 }
 
+/**
+ * @brief Display IP addresses for a specific interface.
+ *
+ * Prints IPv4/IPv6 addresses (with prefixes) for the given interface name.
+ * If the interface is not found or has no IP addresses, prints a message, not stderr.
+ * Exits the process on `getifaddrs` failure.
+ * 
+ * Looks relly the same as "show_all_interfaces() function detailed above
+ *
+ * @param target_ifname  Name of the interface to display.
+ */
 static void show_single_interface(const char *target_ifname) {
     struct ifaddrs *ifaddr = NULL;
     if (getifaddrs(&ifaddr) == -1) {
@@ -161,6 +223,18 @@ static void show_single_interface(const char *target_ifname) {
     }
 }
 
+/**
+ * @brief Program entry point.
+ *
+ * Parses command-line arguments and dispatches to the appropriate action:
+ *  - `-a` to list all interfaces
+ *  - `-i <name>` to list a specific interface
+ * On invalid usage, prints help and exits with failure.
+ *
+ * @param argc  Argument count.
+ * @param argv  Argument vector.
+ * @return `EXIT_SUCCESS` on success; otherwise exits the process with failure.
+ */
 int main(int argc, char *argv[]) {
 
     const char *expected_argument_1 = "-a";
